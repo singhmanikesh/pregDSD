@@ -1,10 +1,12 @@
 require("dotenv").config();
+const axios = require("axios");
 const http = require("http");
 const { GoogleSpreadsheet } = require("google-spreadsheet");
 const { JWT } = require("google-auth-library");
-const nodemailer = require("nodemailer");
+
 
 const PRIVATE_KEY = (process.env.GOOGLE_PRIVATE_KEY || "").replace(/\\n/g, "\n");
+const BREVO_API_KEY = process.env.BREVO_API_KEY || "";
 
 if (!process.env.GOOGLE_CLIENT_EMAIL || !PRIVATE_KEY) {
   throw new Error("google-sheet-api.json is missing client_email or private_key");
@@ -50,19 +52,7 @@ const validateGoogleAuth = async () => {
   }
 };
 
-const SMTP_HOST = process.env.SMTP_HOST || "smtp-relay.brevo.com";
-const SMTP_PORT = Number(process.env.SMTP_PORT) || 587;
-const SMTP_USER = process.env.SMTP_USER || process.env.MAIL_FROM;
-const SMTP_PASS = process.env.SMTP_PASS || process.env.BREVO_API_KEY;
-
-const mailTransport = nodemailer.createTransport({
-  host: SMTP_HOST,
-  port: SMTP_PORT,
-  secure: SMTP_PORT === 465,
-  auth: SMTP_USER && SMTP_PASS ? { user: SMTP_USER, pass: SMTP_PASS } : undefined,
-  logger: true,
-  debug: true,
-});
+const MAIL_FROM = process.env.MAIL_FROM || "no-reply@example.com";
 
 const sendJson = (res, status, payload) => {
   const body = JSON.stringify(payload);
@@ -148,43 +138,100 @@ const appendRow = async ({ name, email, note }) => {
 
 const sendConfirmationEmail = async ({ name, email }) => {
 
-  if (!SMTP_USER || !SMTP_PASS) {
-    throw new Error("SMTP credentials are not configured");
+  if (!BREVO_API_KEY) {
+    throw new Error("BREVO_API_KEY is not configured");
   }
 
-  const senderEmail = process.env.MAIL_FROM || SMTP_USER || "no-reply@example.com";
-
-  console.info("Sending confirmation email", {
+  console.info("Sending confirmation email via Brevo", {
     to: email,
-    sender: senderEmail,
-    transport: SMTP_HOST,
-    port: SMTP_PORT,
+    sender: MAIL_FROM,
   });
 
   try {
-    const info = await mailTransport.sendMail({
-      from: { address: senderEmail, name: "Pre-Registration" },
-      sender: senderEmail,
-      to: [{ address: email, name }],
-      subject: "Registration received",
-      html: `<div style="background:#0f0f17;padding:30px;font-family:Arial;">
-        <h2 style="color:#ff3c5f">🎮 DSD Premium Gaming Café</h2>
-        <p>Hi <b>${name || "Gamer"}</b>,</p>
-        <p>Your pre-registration has been received successfully.</p>
-        <p><b>Grand Opening: 13 March</b></p>
-      </div>`
-    });
+                  //// mail payload structure based on Brevo API v3 documentation
+    const response = await axios.post(
+      "https://api.brevo.com/v3/smtp/email",
+      {
+        sender: { email: MAIL_FROM, name: "Pre-Registration" },
+        to: [{ email, name }],
+        subject: "Registration received",
+        htmlContent: `<div style="background:#0b0b14;padding:40px;font-family:Arial,Helvetica,sans-serif;color:#ffffff">
+
+  <div style="max-width:600px;margin:auto;background:#111122;border-radius:12px;overflow:hidden;border:1px solid #1f1f3a">
+
+    <!-- Logo -->
+    <div style="text-align:center;padding:30px;background:#0f0f1a;border-bottom:1px solid #1c1c35">
+      <img src="https://res.cloudinary.com/dqkn02x53/image/upload/v1772852792/RED_600x-100.jpg_n9gymt.jpg" alt="DSD Gaming" style="height:60px;margin-bottom:10px">
+      <h2 style="margin:0;color:#ff3c5f;letter-spacing:2px">DSD PREMIUM GAMING CAFE</h2>
+    </div>
+
+    <!-- Character -->
+    <div style="text-align:center;padding:30px">
+      <img 
+        src="https://res.cloudinary.com/dqkn02x53/image/upload/v1772852822/elsa_vquveh.jpg"
+        alt="Gaming Character"
+        style="width:160px;border-radius:12px;margin-bottom:20px"
+      >
+    </div>
+
+    <!-- Content -->
+    <div style="padding:0 40px 30px 40px;text-align:center">
+
+      <h2 style="color:#00ffe1;margin-bottom:10px">
+        🎮 Welcome Gamer!
+      </h2>
+
+      <p style="font-size:16px;line-height:1.6;color:#d1d1e0">
+        Hi <b>{{name}}</b>,
+        <br><br>
+        Your <span style="color:#ff3c5f">pre-registration</span> for  
+        <b>DSD Premium Gaming Café</b> has been received successfully.
+      </p>
+
+      <div style="margin:25px 0;padding:15px;background:#15152a;border-radius:8px;border:1px solid #25254a">
+        <h3 style="margin:0;color:#ffd93d">🚀 Grand Opening</h3>
+        <p style="margin:5px 0 0 0;font-size:18px"><b>13 March</b></p>
+      </div>
+
+      <!-- CTA -->
+      <a href="https://yourwebsite.com"
+        style="display:inline-block;margin-top:10px;padding:12px 28px;background:#ff3c5f;color:#ffffff;text-decoration:none;border-radius:6px;font-weight:bold">
+        Join the Arena
+      </a>
+
+    </div>
+
+    <!-- Footer -->
+    <div style="background:#0f0f1a;padding:20px;text-align:center;font-size:12px;color:#8a8aa3">
+      <p style="margin:0">
+        © 2026 DSD Gaming Café
+      </p>
+      <p style="margin:4px 0 0 0">
+        Power up your gaming experience ⚡
+      </p>
+    </div>
+
+  </div>
+
+</div>`
+      },
+      {
+        headers: {
+          "Content-Type": "application/json",
+          "api-key": BREVO_API_KEY,
+        },
+      }
+    );
 
     console.info("Confirmation email sent", {
       to: email,
-      messageId: info?.messageId,
+      messageId: response?.data?.messageId,
     });
 
   } catch (err) {
 
     console.error("Confirmation email failed", {
-      message: err?.message,
-      code: err?.code
+      message: err?.response?.data || err?.message,
     });
 
     throw err;
@@ -267,14 +314,6 @@ server.listen(PORT, HOST, async () => {
     console.error("Startup failed", err);
     process.exit(1);
   }
-
-  mailTransport.verify((err, success) => {
-    if (err) {
-      console.error("SMTP verify failed", err);
-    } else {
-      console.info("SMTP connection verified", success);
-    }
-  });
 
   console.log(`Server running on http://${HOST}:${PORT}`);
 });
