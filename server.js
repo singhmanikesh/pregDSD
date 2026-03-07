@@ -16,8 +16,12 @@ if (!PRIVATE_KEY.includes("BEGIN PRIVATE KEY") || !PRIVATE_KEY.includes("END PRI
   throw new Error("google-sheet-api.json private_key format is invalid (missing PEM markers)");
 }
 
-const PORT = 5000;
+const PORT = 9000;
 const HOST = "0.0.0.0";
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || "*")
+  .split(",")
+  .map((o) => o.trim())
+  .filter(Boolean);
 
 const SHEET_ID =
   process.env.GOOGLE_SHEET_ID || "1FEB2SbX7AAPLhQxPE7IHmmBGBbYxnNj6iVRPBuavic0";
@@ -61,6 +65,24 @@ const sendJson = (res, status, payload) => {
     "Content-Length": Buffer.byteLength(body),
   });
   res.end(body);
+};
+
+const applyCors = (req, res) => {
+  const origin = req.headers.origin;
+  const allowAny = ALLOWED_ORIGINS.includes("*");
+  const allowedOrigin = allowAny
+    ? "*"
+    : ALLOWED_ORIGINS.includes(origin)
+      ? origin
+      : undefined;
+
+  if (allowedOrigin) {
+    res.setHeader("Access-Control-Allow-Origin", allowedOrigin);
+  }
+
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Max-Age", "86400");
 };
 
 const parseBody = (req) =>
@@ -116,11 +138,11 @@ const isEmailRegistered = async (email) => {
   return exists;
 };
 
-const appendRow = async ({ name, email, note }) => {
+const appendRow = async ({ name, email, phone, gamertag, note }) => {
 
   if (!sheet) throw new Error("Sheet not initialized");
 
-  const requiredHeaders = ["name", "email", "note", "created_at"];
+  const requiredHeaders = ["sl", "name", "email", "phone", "gamertag", "note", "created_at", "created_time"];
 
   try {
     await sheet.loadHeaderRow();
@@ -128,11 +150,21 @@ const appendRow = async ({ name, email, note }) => {
     await sheet.setHeaderRow(requiredHeaders);
   }
 
+  const rows = await sheet.getRows();
+  const sl = rows.length + 1;
+  const now = new Date();
+  const createdAt = now.toISOString();
+  const createdTime = createdAt.replace("T", " ").slice(0, 19);
+
   await sheet.addRow({
+    sl,
     name,
     email,
+    phone,
+    gamertag,
     note,
-    created_at: new Date().toISOString(),
+    created_at: createdAt,
+    created_time: createdTime,
   });
 };
 
@@ -240,6 +272,13 @@ const sendConfirmationEmail = async ({ name, email }) => {
 
 const server = http.createServer(async (req, res) => {
 
+  applyCors(req, res);
+
+  if (req.method === "OPTIONS") {
+    res.writeHead(204);
+    return res.end();
+  }
+
   if (req.url === "/health" && req.method === "GET") {
     return sendJson(res, 200, {
       status: "ok",
@@ -260,11 +299,11 @@ const server = http.createServer(async (req, res) => {
 
       const body = await parseBody(req);
 
-      const { name, email, note = "" } = body;
+      const { name, email, phone, gamertag, note = "" } = body;
 
-      if (!name || !email) {
+      if (!name || !email || !phone || !gamertag) {
         return sendJson(res, 400, {
-          error: "name and email are required",
+          error: "name, email, phone, and gamertag are required",
         });
       }
 
@@ -276,7 +315,7 @@ const server = http.createServer(async (req, res) => {
         });
       }
 
-      await appendRow({ name, email, note });
+      await appendRow({ name, email, phone, gamertag, note });
 
       try {
         await sendConfirmationEmail({ name, email });
@@ -303,6 +342,30 @@ const server = http.createServer(async (req, res) => {
 
   return sendJson(res, 404, { error: "Not found" });
 
+});
+
+// Guard against unhandled server and promise errors so the process dies with context instead of crashing with an "Unhandled 'error' event" message.
+server.on("error", (err) => {
+  console.error("HTTP server error", {
+    message: err?.message,
+    code: err?.code,
+    stack: err?.stack,
+  });
+  process.exit(1);
+});
+
+process.on("unhandledRejection", (reason) => {
+  console.error("Unhandled promise rejection", reason);
+  process.exit(1);
+});
+
+process.on("uncaughtException", (err) => {
+  console.error("Uncaught exception", {
+    message: err?.message,
+    code: err?.code,
+    stack: err?.stack,
+  });
+  process.exit(1);
 });
 
 server.listen(PORT, HOST, async () => {
