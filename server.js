@@ -1,10 +1,12 @@
 require("dotenv").config();
+const axios = require("axios");
 const http = require("http");
 const { GoogleSpreadsheet } = require("google-spreadsheet");
 const { JWT } = require("google-auth-library");
-const nodemailer = require("nodemailer");
+
 
 const PRIVATE_KEY = (process.env.GOOGLE_PRIVATE_KEY || "").replace(/\\n/g, "\n");
+const BREVO_API_KEY = process.env.BREVO_API_KEY || "";
 
 if (!process.env.GOOGLE_CLIENT_EMAIL || !PRIVATE_KEY) {
   throw new Error("google-sheet-api.json is missing client_email or private_key");
@@ -14,8 +16,12 @@ if (!PRIVATE_KEY.includes("BEGIN PRIVATE KEY") || !PRIVATE_KEY.includes("END PRI
   throw new Error("google-sheet-api.json private_key format is invalid (missing PEM markers)");
 }
 
-const PORT = 5000;
+const PORT = 9000;
 const HOST = "0.0.0.0";
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || "*")
+  .split(",")
+  .map((o) => o.trim())
+  .filter(Boolean);
 
 const SHEET_ID =
   process.env.GOOGLE_SHEET_ID || "1FEB2SbX7AAPLhQxPE7IHmmBGBbYxnNj6iVRPBuavic0";
@@ -50,19 +56,7 @@ const validateGoogleAuth = async () => {
   }
 };
 
-const SMTP_HOST = process.env.SMTP_HOST || "smtp-relay.brevo.com";
-const SMTP_PORT = Number(process.env.SMTP_PORT) || 587;
-const SMTP_USER = process.env.SMTP_USER || process.env.MAIL_FROM;
-const SMTP_PASS = process.env.SMTP_PASS || process.env.BREVO_API_KEY;
-
-const mailTransport = nodemailer.createTransport({
-  host: SMTP_HOST,
-  port: SMTP_PORT,
-  secure: SMTP_PORT === 465,
-  auth: SMTP_USER && SMTP_PASS ? { user: SMTP_USER, pass: SMTP_PASS } : undefined,
-  logger: true,
-  debug: true,
-});
+const MAIL_FROM = process.env.MAIL_FROM || "no-reply@example.com";
 
 const sendJson = (res, status, payload) => {
   const body = JSON.stringify(payload);
@@ -71,6 +65,24 @@ const sendJson = (res, status, payload) => {
     "Content-Length": Buffer.byteLength(body),
   });
   res.end(body);
+};
+
+const applyCors = (req, res) => {
+  const origin = req.headers.origin;
+  const allowAny = ALLOWED_ORIGINS.includes("*");
+  const allowedOrigin = allowAny
+    ? "*"
+    : ALLOWED_ORIGINS.includes(origin)
+      ? origin
+      : undefined;
+
+  if (allowedOrigin) {
+    res.setHeader("Access-Control-Allow-Origin", allowedOrigin);
+  }
+
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Max-Age", "86400");
 };
 
 const parseBody = (req) =>
@@ -126,11 +138,11 @@ const isEmailRegistered = async (email) => {
   return exists;
 };
 
-const appendRow = async ({ name, email, note }) => {
+const appendRow = async ({ name, email, phone, gamertag, note }) => {
 
   if (!sheet) throw new Error("Sheet not initialized");
 
-  const requiredHeaders = ["name", "email", "note", "created_at"];
+  const requiredHeaders = ["sl", "name", "email", "phone", "gamertag", "note", "created_at", "created_time"];
 
   try {
     await sheet.loadHeaderRow();
@@ -138,53 +150,120 @@ const appendRow = async ({ name, email, note }) => {
     await sheet.setHeaderRow(requiredHeaders);
   }
 
+  const rows = await sheet.getRows();
+  const sl = rows.length + 1;
+  const now = new Date();
+  const createdAt = now.toISOString();
+  const createdTime = createdAt.replace("T", " ").slice(0, 19);
+
   await sheet.addRow({
+    sl,
     name,
     email,
+    phone,
+    gamertag,
     note,
-    created_at: new Date().toISOString(),
+    created_at: createdAt,
+    created_time: createdTime,
   });
 };
 
 const sendConfirmationEmail = async ({ name, email }) => {
 
-  if (!SMTP_USER || !SMTP_PASS) {
-    throw new Error("SMTP credentials are not configured");
+  if (!BREVO_API_KEY) {
+    throw new Error("BREVO_API_KEY is not configured");
   }
 
-  const senderEmail = process.env.MAIL_FROM || SMTP_USER || "no-reply@example.com";
-
-  console.info("Sending confirmation email", {
+  console.info("Sending confirmation email via Brevo", {
     to: email,
-    sender: senderEmail,
-    transport: SMTP_HOST,
-    port: SMTP_PORT,
+    sender: MAIL_FROM,
   });
 
   try {
-    const info = await mailTransport.sendMail({
-      from: { address: senderEmail, name: "Pre-Registration" },
-      sender: senderEmail,
-      to: [{ address: email, name }],
-      subject: "Registration received",
-      html: `<div style="background:#0f0f17;padding:30px;font-family:Arial;">
-        <h2 style="color:#ff3c5f">🎮 DSD Premium Gaming Café</h2>
-        <p>Hi <b>${name || "Gamer"}</b>,</p>
-        <p>Your pre-registration has been received successfully.</p>
-        <p><b>Grand Opening: 13 March</b></p>
-      </div>`
-    });
+                  //// mail payload structure based on Brevo API v3 documentation
+    const response = await axios.post(
+      "https://api.brevo.com/v3/smtp/email",
+      {
+        sender: { email: MAIL_FROM, name: "Pre-Registration" },
+        to: [{ email, name }],
+        subject: "Registration received",
+        htmlContent: `<div style="background:#0b0b14;padding:40px;font-family:Arial,Helvetica,sans-serif;color:#ffffff">
+
+  <div style="max-width:600px;margin:auto;background:#111122;border-radius:12px;overflow:hidden;border:1px solid #1f1f3a">
+
+    <!-- Logo -->
+    <div style="text-align:center;padding:30px;background:#0f0f1a;border-bottom:1px solid #1c1c35">
+      <img src="https://res.cloudinary.com/dlzzdud8k/image/upload/v1772952775/DSD_logo_nav_bars_srfeww.png" alt="DSD Gaming" style="height:60px;margin-bottom:10px">
+      <h2 style="margin:0;color:#ff3c5f;letter-spacing:2px">DSD PREMIUM GAMING CAFE</h2>
+    </div>
+
+    <!-- Character -->
+    <div style="text-align:center;padding:30px">
+      <img 
+        src="https://res.cloudinary.com/dlzzdud8k/image/upload/v1772952667/bday-Photoroom_j1hzyl.png"
+        alt="Gaming Character"
+        style="width:160px;border-radius:12px;margin-bottom:20px"
+      >
+    </div>
+
+    <!-- Content -->
+    <div style="padding:0 40px 30px 40px;text-align:center">
+
+      <h2 style="color:#00ffe1;margin-bottom:10px">
+        🎮 Welcome Gamer!
+      </h2>
+
+      <p style="font-size:16px;line-height:1.6;color:#d1d1e0">
+        Hi <b>${name}</b>,
+        <br><br>
+        Your <span style="color:#ff3c5f">pre-registration</span> for  
+        <b>DSD Premium Gaming Café</b> has been received successfully.
+      </p>
+
+      <div style="margin:25px 0;padding:15px;background:#15152a;border-radius:8px;border:1px solid #25254a">
+        <h3 style="margin:0;color:#ffd93d">🚀 Grand Opening</h3>
+        <p style="margin:5px 0 0 0;font-size:18px"><b> March</b></p>
+      </div>
+
+      <!-- CTA -->
+      <a href="https://www.dsdpremiumgaming.com/tournaments"
+        style="display:inline-block;margin-top:10px;padding:12px 28px;background:#ff3c5f;color:#ffffff;text-decoration:none;border-radius:6px;font-weight:bold">
+        Join the Arena
+      </a>
+
+    </div>
+
+    <!-- Footer -->
+    <div style="background:#0f0f1a;padding:20px;text-align:center;font-size:12px;color:#8a8aa3">
+      <p style="margin:0">
+        © 2026 DSD Gaming Café
+      </p>
+      <p style="margin:4px 0 0 0">
+        Power up your gaming experience ⚡
+      </p>
+    </div>
+
+  </div>
+
+</div>`
+      },
+      {
+        headers: {
+          "Content-Type": "application/json",
+          "api-key": BREVO_API_KEY,
+        },
+      }
+    );
 
     console.info("Confirmation email sent", {
       to: email,
-      messageId: info?.messageId,
+      messageId: response?.data?.messageId,
     });
 
   } catch (err) {
 
     console.error("Confirmation email failed", {
-      message: err?.message,
-      code: err?.code
+      message: err?.response?.data || err?.message,
     });
 
     throw err;
@@ -192,6 +271,13 @@ const sendConfirmationEmail = async ({ name, email }) => {
 };
 
 const server = http.createServer(async (req, res) => {
+
+  applyCors(req, res);
+
+  if (req.method === "OPTIONS") {
+    res.writeHead(204);
+    return res.end();
+  }
 
   if (req.url === "/health" && req.method === "GET") {
     return sendJson(res, 200, {
@@ -213,23 +299,24 @@ const server = http.createServer(async (req, res) => {
 
       const body = await parseBody(req);
 
-      const { name, email, note = "" } = body;
+      const { name, email, phone, gamertag, note = "" } = body;
 
-      if (!name || !email) {
+      if (!name || !email || !phone || !gamertag) {
         return sendJson(res, 400, {
-          error: "name and email are required",
+          error: "name, email, phone, and gamertag are required",
         });
       }
 
       const alreadyRegistered = await isEmailRegistered(email);
 
       if (alreadyRegistered) {
+        console.warn("Duplicate registration attempt", { email });
         return sendJson(res, 409, {
           error: "This email is already registered",
         });
       }
 
-      await appendRow({ name, email, note });
+      await appendRow({ name, email, phone, gamertag, note });
 
       try {
         await sendConfirmationEmail({ name, email });
@@ -258,6 +345,30 @@ const server = http.createServer(async (req, res) => {
 
 });
 
+// Guard against unhandled server and promise errors so the process dies with context instead of crashing with an "Unhandled 'error' event" message.
+server.on("error", (err) => {
+  console.error("HTTP server error", {
+    message: err?.message,
+    code: err?.code,
+    stack: err?.stack,
+  });
+  process.exit(1);
+});
+
+process.on("unhandledRejection", (reason) => {
+  console.error("Unhandled promise rejection", reason);
+  process.exit(1);
+});
+
+process.on("uncaughtException", (err) => {
+  console.error("Uncaught exception", {
+    message: err?.message,
+    code: err?.code,
+    stack: err?.stack,
+  });
+  process.exit(1);
+});
+
 server.listen(PORT, HOST, async () => {
 
   try {
@@ -267,14 +378,6 @@ server.listen(PORT, HOST, async () => {
     console.error("Startup failed", err);
     process.exit(1);
   }
-
-  mailTransport.verify((err, success) => {
-    if (err) {
-      console.error("SMTP verify failed", err);
-    } else {
-      console.info("SMTP connection verified", success);
-    }
-  });
 
   console.log(`Server running on http://${HOST}:${PORT}`);
 });
