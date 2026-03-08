@@ -222,7 +222,7 @@ const sendConfirmationEmail = async ({ name, email }) => {
 
       <div style="margin:25px 0;padding:15px;background:#15152a;border-radius:8px;border:1px solid #25254a">
         <h3 style="margin:0;color:#ffd93d">🚀 Grand Opening</h3>
-        <p style="margin:5px 0 0 0;font-size:18px"><b> March</b></p>
+        <p style="margin:5px 0 0 0;font-size:18px"><b>20 March</b></p>
       </div>
 
       <!-- CTA -->
