@@ -310,6 +310,7 @@ const server = http.createServer(async (req, res) => {
       const alreadyRegistered = await isEmailRegistered(email);
 
       if (alreadyRegistered) {
+        console.warn("Duplicate registration attempt", { email });
         return sendJson(res, 409, {
           error: "This email is already registered",
         });
