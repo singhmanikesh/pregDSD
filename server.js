@@ -301,7 +301,7 @@ const server = http.createServer(async (req, res) => {
 
       const { name, email, phone, gamertag, note = "" } = body;
 
-      if (!name || !email || !phone || !gamertag) {
+      if (!name || !email || !phone) {
         return sendJson(res, 400, {
           error: "name, email, phone, and gamertag are required",
         });
